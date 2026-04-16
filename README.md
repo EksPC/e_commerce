@@ -1,6 +1,6 @@
-# e_commerce
+# e-Commerce Backend
 
-A Python-based e-commerce platform built on a microservices architecture implementing the **SAGA orchestration pattern** for distributed transactions. Originally developed for the Distributed Data Systems course at TU Delft and continuously improved.
+A Python-based e-commerce backend built on a microservices architecture implementing the **SAGA orchestration pattern** for distributed transactions. Originally developed for the Distributed Data Systems course at TU Delft and continuously improved.
 
 ---
 
@@ -23,48 +23,11 @@ A Python-based e-commerce platform built on a microservices architecture impleme
 
 ---
 
-## Architecture Overview
-
-```
-                        ┌────────────────────────────────────────────────┐
-                        │               Nginx Gateway (:8000)            │
-                        │   /orders/ → Order   /stock/ → Stock           │
-                        │   /payment/ → Payment                          │
-                        └───────────┬──────────────────┬─────────────────┘
-                                    │                  │
-              ┌─────────────────────┼──────────────────┼──────────────────┐
-              │                     │                  │                  │
-       ┌──────▼──────┐      ┌───────▼──────┐   ┌──────▼──────┐   ┌───────▼──────┐
-       │   Order     │      │    Stock     │   │   Payment   │   │ Orchestrator │
-       │   Service   │      │   Service   │   │   Service   │   │   Service    │
-       │  (FastAPI)  │      │  (FastAPI)  │   │  (FastAPI)  │   │  (FastAPI)  │
-       └──────┬──────┘      └──────┬──────┘   └──────┬──────┘   └──────┬──────┘
-              │                    │                  │                  │
-       ┌──────▼──────┐      ┌──────▼──────┐   ┌──────▼──────┐   ┌──────▼──────┐
-       │  order-db   │      │  stock-db   │   │ payment-db  │   │orchestrator │
-       │  (CitusDB)  │      │  (CitusDB)  │   │  (CitusDB)  │   │    -db      │
-       └──────┬──────┘      └──────┬──────┘   └──────┬──────┘   └──────┬──────┘
-              │                    │                  │                  │
-       ┌──────▼──────────────────────────────────────────────────────────▼──────┐
-       │                          Apache Kafka                                   │
-       │  orchestrator.request │ stock.request │ payment.request │ order.request │
-       └────────────────────────────────────────────────────────────────────────┘
-                                          │
-                              ┌───────────▼───────────┐
-                              │          Redis        │
-                              │   (pub/sub for saga   │
-                              │    result delivery)   │
-                              └───────────────────────┘
-```
-
+## Services
 Each service is split into three independent processes:
 - **`{service}-service`** – The REST API (FastAPI served via Gunicorn + UvicornWorker)
 - **`{service}-producer`** – The outbox relay: polls the DB outbox table and publishes events to Kafka
 - **`{service}-consumer`** – Subscribes to Kafka topics and processes incoming commands/events
-
----
-
-## Services
 
 ### Order Service
 
@@ -193,102 +156,6 @@ When a client calls `POST /checkout/{order_id}`, the Order service:
 
 ---
 
-## Checkout SAGA Flow
-
-```
-Client
-  │
-  ▼
-Order Service (POST /checkout/{order_id})
-  │  writes CHECKOUT_INITIATED → outbox
-  │  subscribes to Redis saga:{saga_id}
-  │
-  ▼
-Order Producer → Kafka (orchestrator.request)
-  │
-  ▼
-Orchestrator Consumer
-  │  creates saga row in DB
-  │  writes reserve_stock → outbox
-  │
-  ▼
-Orchestrator Producer → Kafka (stock.request)
-  │
-  ▼
-Stock Consumer
-  ├─[stock available]─► writes STOCK_ALLOCATED → outbox
-  └─[stock unavailable]─► writes STOCK_UNAVAILABLE → outbox
-  │
-  ▼
-Stock Producer → Kafka (orchestrator.request)
-  │
-  ▼
-Orchestrator Consumer
-  ├─[STOCK_ALLOCATED]
-  │   updates saga; writes start_payment → outbox
-  │                         │
-  │   Orchestrator Producer → Kafka (payment.request)
-  │                         │
-  │   Payment Consumer      ▼
-  │   ├─[success]─► writes PAYMENT_SUCCEEDED → outbox
-  │   └─[failure]─► writes PAYMENT_FAILED → outbox
-  │                         │
-  │   Payment Producer → Kafka (orchestrator.request)
-  │                         │
-  │   Orchestrator Consumer ▼
-  │   ├─[PAYMENT_SUCCEEDED]─► writes end_checkout(success) → outbox
-  │   └─[PAYMENT_FAILED]──┐
-  │                        └─► writes free_stock → outbox
-  │                            Stock rolls back, sends STOCK_FREED
-  │                            Orchestrator writes end_checkout(failed) → outbox
-  │
-  └─[STOCK_UNAVAILABLE]─► writes end_checkout(failed) → outbox
-  │
-  ▼
-Orchestrator Producer → Kafka (order.request)
-  │
-  ▼
-Order Consumer
-  │  publishes result to Redis saga:{saga_id}
-  │
-  ▼
-Order Service
-  │  receives from Redis pub/sub
-  └─► returns HTTP 200 (success) or HTTP 400 (failure) to client
-```
-
----
-
-## Kafka Topics
-
-| Topic | Partitions | Produced by | Consumed by |
-|-------|-----------|-------------|-------------|
-| `orchestrator.request` | 20 | Order, Stock, Payment producers | Orchestrator consumer |
-| `stock.request` | 6 | Orchestrator producer | Stock consumer |
-| `payment.request` | 6 | Orchestrator producer | Payment consumer |
-| `order.request` | 6 | Orchestrator producer | Order consumer |
-| `orchestrator.dead_letter` | 1 | — | For unprocessable messages |
-
----
-
-## Database Schema
-
-Each service owns an isolated database. Common patterns across all services:
-
-- **`outbox`** – Transactional outbox for Kafka publishing (`id`, `topic`, `payload`, `sent`)
-- **`received_events`** – Idempotency guard (`event_id`, `status`, `result`)
-
-Service-specific tables:
-
-| Service | Table | Key Columns |
-|---------|-------|-------------|
-| Order | `orders` | `order_id`, `user_id`, `items` (JSONB), `total_cost`, `paid` |
-| Order | `log` | Internal event log for auditing |
-| Stock | `item_snapshots` | `item_id`, `stock`, `price`, `version` |
-| Payment | `user_snapshots` | `user_id`, `credit`, `version` |
-| Orchestrator | `sagas` | `id`, `order_id`, `status`, `stock`, `payment`, `results` (JSONB), `version` |
-
----
 
 ## Deployment
 
@@ -304,17 +171,6 @@ Environment files (not committed) are expected under `env/`:
 - `env/order_citus.env`, `env/stock_citus.env`, `env/payment_citus.env`, `env/orchestrator_citus.env`
 - `env/kafka_settings.env`
 
-### Kubernetes / Minikube
-
-Kubernetes manifests are located in `k8s/`. To deploy on Minikube with Helm:
-
-```bash
-./deploy-charts-minikube.sh
-```
-
-Helm value overrides are in `helm-config/`.
-
----
 
 ## Testing
 
