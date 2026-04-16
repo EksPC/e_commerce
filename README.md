@@ -6,7 +6,6 @@ A Python-based e-commerce backend built on a microservices architecture implemen
 
 ## Table of Contents
 
-- [Architecture Overview](#architecture-overview)
 - [Services](#services)
   - [Order Service](#order-service)
   - [Stock Service](#stock-service)
@@ -14,8 +13,6 @@ A Python-based e-commerce backend built on a microservices architecture implemen
   - [Orchestrator Service](#orchestrator-service)
 - [Infrastructure Components](#infrastructure-components)
 - [Key Design Patterns](#key-design-patterns)
-- [Checkout SAGA Flow](#checkout-saga-flow)
-- [Kafka Topics](#kafka-topics)
 - [Database Schema](#database-schema)
 - [API Reference](#api-reference)
 - [Deployment](#deployment)
